@@ -1,8 +1,14 @@
 package libhoney
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/ioutil"
+	"net/http"
 	"sync"
+	"time"
 
 	"github.com/honeycombio/libhoney-go/transmission"
 )
@@ -230,4 +236,108 @@ func (c *Client) sendDroppedResponse(e *Event, message string) {
 	}
 	c.transmission.SendResponse(r)
 
+}
+
+// MarkerRequest will be used to add details about a marker before
+// creating it
+type MarkerRequest struct {
+	StartTime int    `json:"start_time,omitempty"`
+	EndTime   int    `json:"end_time,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Type      string `json:"type,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+// MarkerResponse stores the marker details whenever a marker is created, updated, deleted, etc
+type MarkerResponse struct {
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	StartTime int    `json:"start_time"`
+	Message   string `json:"message"`
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+}
+
+// CreateMarker will create a marker for a dataset using the marker request body
+func CreateMarker(dataset, apiKey string, markerRequest MarkerRequest) (MarkerResponse, error) {
+	endpoint := fmt.Sprintf("%s1/markers/%s", defaultAPIHost, dataset)
+
+	reqBytes, err := json.Marshal(markerRequest)
+	if err != nil {
+		return MarkerResponse{}, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(reqBytes))
+	if err != nil {
+		return MarkerResponse{}, fmt.Errorf("failed to create http request: %w", err)
+	}
+
+	req.Header.Add("X-Honeycomb-Team", apiKey)
+
+	var markerResponse MarkerResponse
+
+	err = do(req, &markerResponse)
+	if err != nil {
+		return MarkerResponse{}, err
+	}
+
+	return markerResponse, nil
+}
+
+// DeleteMarker will delete a marker given the marker id
+func DeleteMarker(dataset, apiKey, markerID string) (MarkerResponse, error) {
+	endpoint := fmt.Sprintf("%s1/markers/%s/%s", defaultAPIHost, dataset, markerID)
+
+	req, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return MarkerResponse{}, fmt.Errorf("failed to create http request: %w", err)
+	}
+
+	req.Header.Add("X-Honeycomb-Team", apiKey)
+
+	var markerResponse MarkerResponse
+
+	err = do(req, &markerResponse)
+	if err != nil {
+		return MarkerResponse{}, err
+	}
+
+	return markerResponse, nil
+}
+
+// do will make an http request with the request that it's given and decode the response
+// body to the data parameter if applicable. Note: you have to pass data as a pointer
+func do(req *http.Request, data interface{}) error {
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make http request: %w", err)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		bodyBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("error reading response body: %w", err)
+		}
+
+		return fmt.Errorf("received unexpected http status %d: body: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// If data is nil that means the response has no body or we just don't need to decode\
+	if data == nil {
+		return nil
+	}
+
+	err = json.NewDecoder(resp.Body).Decode(data)
+	if err != nil {
+		return fmt.Errorf("failed to decode response body: %w", err)
+	}
+
+	return nil
 }
